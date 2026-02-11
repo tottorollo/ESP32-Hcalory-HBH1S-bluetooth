@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diesel Heater Control Panel</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js" type="text/javascript"></script>
+    
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; text-align: center; margin: 0; padding: 20px; }
+        h1 { color: #00e5ff; margin-bottom: 10px; }
+        
+        /* Settings Panel */
+        #settings-panel { background: #222; padding: 15px; border-radius: 10px; margin: 10px auto; max-width: 500px; border: 1px solid #444; display: none; }
+        .config-input { background: #333; color: #00e5ff; border: 1px solid #555; padding: 8px; border-radius: 5px; width: 60%; }
+        .config-btn { background: #444; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
+        .toggle-settings { cursor: pointer; font-size: 1.5em; color: #888; margin-bottom: 10px; display: inline-block; }
+
+        .sensor-container { margin: 10px auto; max-width: 500px; display: grid; grid-template-columns: 1fr; gap: 15px; }
+        .sensor-box { background: #1e1e1e; padding: 20px; border-radius: 12px; border: 1px solid #333; transition: 0.3s; }
+        
+        .heater-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em; text-align: left; margin-top: 15px; border-top: 1px solid #333; padding-top: 15px; }
+        .heater-grid span { color: #00e5ff; font-weight: bold; float: right; }
+        
+        button { padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 5px; border: 1px solid #333; transition: 0.2s; }
+        
+        #btn-heat-on, #btn-fan-on { background: #1e1e1e; color: white; }
+        #btn-off { background: #c62828; color: white; border: none; }
+
+        .btn-active-heat { background: #2e7d32 !important; border-color: #4caf50 !important; box-shadow: 0 0 10px rgba(76, 175, 80, 0.5); }
+        .btn-active-fan { background: #1565c0 !important; border-color: #2196f3 !important; box-shadow: 0 0 10px rgba(33, 150, 243, 0.5); }
+
+        .slider-container { margin-top: 20px; background: #252525; padding: 15px; border-radius: 8px; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #00e5ff; }
+
+        #mqtt-monitor { max-width: 800px; margin: 20px auto; background: #000; color: #00ff00; font-family: monospace; text-align: left; padding: 15px; border-radius: 8px; border: 1px solid #333; font-size: 0.8em; height: 200px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+
+    <div class="toggle-settings" onclick="toggleSettings()">⚙️</div>
+    <h1>Heater Control <small id="esp-connectivity" style="font-size: 0.4em; color: #ff5252;">●</small></h1>
+
+    <div id="settings-panel">
+        <strong>MQTT Broker Settings</strong><br><br>
+        <input type="text" id="mqtt-host" class="config-input" placeholder="IP Address">
+        <button class="config-btn" onclick="saveSettings()">Save & Connect</button>
+        <p style="font-size: 0.7em; color: #888;">Port 9001 (WebSockets) is used by default.</p>
+    </div>
+
+    <div class="sensor-container">
+        <div class="sensor-box" style="border: 1px solid #ff9800;">
+            <strong style="color: #ff9800; font-size: 1.2em;">Diesel Heater</strong> 
+            <br><span id="heater-presence" style="font-size: 0.8em;">WAITING...</span>
+            <br>Status: <span id="heater-status-text">--</span>
+            
+            <div class="heater-grid">
+                <div>Ambient: <span id="h-env">--</span></div>
+                <div>Exchanger: <span id="h-alu">--</span></div>
+                <div>Voltage: <span id="h-volt">--</span></div>
+                <div>Fan Speed: <span id="h-fan">--</span></div>
+            </div>
+
+            <div style="margin-top: 20px; display: flex; justify-content: center; gap: 5px;">
+                <button id="btn-heat-on" onclick="controlHeater('ON')">HEATING</button>
+                <button id="btn-fan-on" onclick="controlHeater('FAN')">VENTILATION</button>
+                <button id="btn-off" onclick="controlHeater('OFF')">OFF</button>
+            </div>
+
+            <div class="slider-container">
+                <label>Power Level: <span id="power-val" style="color:#00e5ff; font-weight:bold;">--</span> / 10</label>
+                <input type="range" id="power-slider" min="1" max="10" value="1" onchange="setHeaterPower(this.value)">
+            </div>
+            
+            <div style="margin-top: 10px; font-size: 0.7em; color: #666;">
+                Last Update: <span id="last_seen">--</span>
+            </div>
+        </div>
+    </div>
+
+    <h2>MQTT Traffic Monitor</h2>
+    <div id="mqtt-monitor">
+        <div id="mqtt-log-list">Configure MQTT Broker to start monitoring...</div>
+    </div>
+
+    <script>
+        let MQTT_HOST = localStorage.getItem("mqtt_host") || "";
+        const MQTT_PORT = 9001;
+        let client = null;
+
+        // Initialize UI with saved host
+        if(MQTT_HOST) {
+            document.getElementById("mqtt-host").value = MQTT_HOST;
+            initMQTT();
+        } else {
+            document.getElementById("settings-panel").style.display = "block";
+        }
+
+        function toggleSettings() {
+            const p = document.getElementById("settings-panel");
+            p.style.display = p.style.display === "block" ? "none" : "block";
+        }
+
+        function saveSettings() {
+            const host = document.getElementById("mqtt-host").value.trim();
+            if(host) {
+                localStorage.setItem("mqtt_host", host);
+                MQTT_HOST = host;
+                location.reload(); // Reload to apply new connection
+            }
+        }
+
+        function initMQTT() {
+            const clientId = "HeaterWeb_" + Math.floor(Math.random() * 10000);
+            client = new Paho.Client(MQTT_HOST, Number(MQTT_PORT), clientId);
+            
+            client.onMessageArrived = (msg) => {
+                const topic = msg.destinationName;
+                const payload = msg.payloadString.trim();
+                const now = new Date().toLocaleTimeString();
+                
+                // Monitor log
+                const monitorList = document.getElementById('mqtt-log-list');
+                const newEntry = document.createElement('div');
+                newEntry.innerHTML = `<span style="color: #888;">[${now}]</span> <strong>${topic}</strong>: ${payload}`;
+                monitorList.insertBefore(newEntry, monitorList.firstChild);
+                if (monitorList.childNodes.length > 50) monitorList.removeChild(monitorList.lastChild);
+
+                // UI Updates
+                if (topic === "mokki/sensor/ympariston_lampotila/state") document.getElementById('h-env').innerText = payload + "°C";
+                if (topic === "mokki/sensor/alumiinin_lampotila/state") document.getElementById('h-alu').innerText = payload + "°C";
+                if (topic === "mokki/sensor/akkujannite/state") document.getElementById('h-volt').innerText = payload + "V";
+                
+                if (topic === "mokki/sensor/puhaltimen_nopeus/state" || topic === "mokki/number/lammitin_tehoasetus/state") {
+                    const val = Math.round(parseFloat(payload));
+                    document.getElementById('h-fan').innerText = val + " lvl";
+                    document.getElementById('power-slider').value = val;
+                    document.getElementById('power-val').innerText = val;
+                }
+
+                if (topic === "mokki/sensor/lammittimen_tila/state") {
+                    const s = document.getElementById("heater-status-text");
+                    const bH = document.getElementById("btn-heat-on");
+                    const bF = document.getElementById("btn-fan-on");
+                    s.innerText = payload;
+                    bH.classList.remove("btn-active-heat");
+                    bF.classList.remove("btn-active-fan");
+                    if (payload.includes("Lämmitys")) { bH.classList.add("btn-active-heat"); s.style.color = "#4caf50"; } 
+                    else if (payload.includes("Puhallus")) { bF.classList.add("btn-active-fan"); s.style.color = "#2196f3"; }
+                    document.getElementById('last_seen').innerText = now;
+                }
+
+                if (topic === "mokki/binary_sensor/lammitin_data_connected/state") {
+                    const p = document.getElementById("heater-presence");
+                    const isOn = (payload === "ON");
+                    p.innerText = isOn ? "CONNECTED" : "DISCONNECTED";
+                    p.style.color = isOn ? "#00e5ff" : "#ff5252";
+                }
+            };
+
+            client.connect({
+                timeout: 10,
+                onSuccess: () => {
+                    client.subscribe("mokki/#");
+                    document.getElementById("esp-connectivity").style.color = "#00ff00";
+                    document.getElementById('mqtt-log-list').innerHTML = "Connected to " + MQTT_HOST;
+                },
+                onFailure: (err) => {
+                    document.getElementById('mqtt-log-list').innerHTML = "Connection failed. Check IP/Broker.";
+                    setTimeout(initMQTT, 5000);
+                }
+            });
+        }
+
+        function sendMQTT(topic, payload) {
+            if (client && client.isConnected()) {
+                const message = new Paho.Message(payload.toString());
+                message.destinationName = topic;
+                client.send(message);
+            }
+        }
+
+        function setHeaterPower(val) {
+            document.getElementById("power-val").innerText = val;
+            sendMQTT("mokki/number/lammitin_tehoasetus/command", val);
+        }
+
+        function controlHeater(action) {
+            let t = "";
+            if (action === 'ON') t = "mokki/button/lammitin_virta_on/command";
+            if (action === 'OFF') t = "mokki/button/lammitin_virta_off/command";
+            if (action === 'FAN') t = "mokki/button/lammitin_puhallus/command"; 
+            if (t) {
+                sendMQTT(t, "PRESS");
+                if (action === 'ON' || action === 'FAN') {
+                    const p = document.getElementById("power-slider").value;
+                    setTimeout(() => sendMQTT("mokki/number/lammitin_tehoasetus/command", p), 3000);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
+

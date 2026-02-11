@@ -1,0 +1,272 @@
+esphome:
+  name: mokkiesp
+  friendly_name: Mokki ESP32
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+wifi:
+  ssid: "YOUR WIFI"
+  password: "YOUR WIFI PW"
+  power_save_mode: light
+
+ota:
+  - platform: esphome
+
+status_led:
+  pin:
+    number: GPIO21
+    inverted: true
+
+logger:
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
+  logs:
+    esp32_ble_tracker: ERROR
+
+mqtt:
+  broker: YOUR BROKER IP
+  client_id: "mokki_esp32_s3"
+  topic_prefix: mokki
+  reboot_timeout: 0s
+  keepalive: 60s
+  discovery: false
+  birth_message:
+    topic: mokki/status
+    payload: online
+  will_message:
+    topic: mokki/status
+    payload: offline
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+    interval: 300ms
+    window: 100ms
+
+globals:
+  - id: ble_seq
+    type: int
+    restore_value: no
+    initial_value: "21"
+
+ble_client:
+  - mac_address: "20:25:05:19:5A:30"
+    id: hcalory_heater
+    on_connect:
+      then:
+        - logger.log: "Yhteys OK - kytketään notifikaatiot..."
+        - lambda: |-
+            uint8_t n[] = {0x01, 0x00};
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0006, 2, n, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+        - delay: 1000ms
+        
+        - logger.log: "Lähetetään Login (Paketti 234 tyylinen)..."
+        - lambda: |-
+            uint8_t login[] = {0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x0c, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x12};
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 18, login, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+        - delay: 500ms
+
+        - logger.log: "Lähetetään Security Lock (Paketti 242)..."
+        - lambda: |-
+            uint8_t lock[] = {0x02, 0x10, 0x00, 0x1d, 0x00, 0x19, 0x00, 0x04, 0x00, 0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x0e, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d};
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 34, lock, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+        - logger.log: "Kättely security lock valmis."
+        - delay: 300ms
+        - logger.log: "Vaihe 5: Aktivoidaan ohjausoikeus..."
+        - lambda: |-
+            uint8_t act[] = {0x02, 0x10, 0x00, 0x16, 0x00, 0x12, 0x00, 0x04, 0x00, 0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x07, 0x0c, 0x00, 0x00, 0x02, 0x01, 0x00, 0x0f};
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 27, act, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+    on_disconnect:
+      then:
+        - binary_sensor.template.publish:
+            id: heater_data_connected
+            state: OFF
+        - text_sensor.template.publish:
+            id: heater_status_text
+            state: "Ei yhteyttä"
+
+sensor:
+  - platform: internal_temperature
+    name: "ESP32 CPU Temp"
+  - platform: template
+    name: "Ympariston lampotila"
+    id: heater_temp_env
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s
+  - platform: template
+    name: "Alumiinin lampotila"
+    id: heater_temp_alu
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s
+  - platform: template
+    name: "Akkujannite"
+    id: heater_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    filters:
+      - throttle: 30s
+  - platform: template
+    name: "Laitteen tila koodi"
+    id: heater_status_code
+    filters:
+      - throttle: 15s
+  - platform: template
+    name: "Puhaltimen nopeus"
+    id: heater_fan_speed
+    unit_of_measurement: "lvl"
+    accuracy_decimals: 0
+    filters:
+      - throttle: 30s
+
+text_sensor:
+  - platform: ble_client
+    ble_client_id: hcalory_heater
+    id: heater_raw_data
+    service_uuid: '0000bd39-0000-1000-8000-00805f9b34fb'
+    characteristic_uuid: '0000bdf8-0000-1000-8000-00805f9b34fb'
+    notify: true
+    on_notify:
+      then:
+        - lambda: |-
+            // Tulostetaan raakadata vianetsintää varten
+            // std::string hex = "";
+            // char buf[5];
+            // for (auto v : x) {
+            //    sprintf(buf, "%02X ", v);
+            //    hex += buf;
+            // }
+            // ESP_LOGI("HEATER_DEBUG", "Vastaus (%d tavua): %s", x.size(), hex.c_str());
+
+            if (x.size() >= 32) {
+              id(heater_data_connected).publish_state(true);
+              
+              // Tila (palautettu tavuun 21, kuten aiemmin todettu toimivaksi)
+              int main_mode = x[21];
+              id(heater_status_code).publish_state(main_mode);
+              
+              // Puhallinnopeus (tavu 22)
+              id(heater_fan_speed).publish_state(x[22]);
+              
+              // Akkujännite (tavu 25)
+              id(heater_voltage).publish_state((float)x[25] / 10.0);
+              
+              // Alumiinin lämpötila (tavu 28)
+              id(heater_temp_alu).publish_state((float)x[28] / 10.0);
+              
+              // Ympäristön lämpötila (tavu 31)
+              id(heater_temp_env).publish_state((float)x[31] / 10.0);
+              
+              // Tekstimuotoinen tila
+              std::string new_status = "";
+              if (main_mode == 0x00) new_status = "Pois päältä (OFF)";
+              else if (main_mode == 0x02) new_status = "Lämmitys";
+              else if (main_mode == 0x03) new_status = "Pelkkä Puhallus";
+              else new_status = "Tila: " + std::to_string(main_mode);
+              
+              id(heater_status_text).publish_state(new_status);
+            }
+  - platform: template
+    name: "Lammittimen Tila"
+    id: heater_status_text
+
+binary_sensor:
+  - platform: ble_presence
+    mac_address: "20:25:05:19:5A:30"
+    name: "Diesel Heater Presence"
+  - platform: template
+    name: "Lammitin Data Connected"
+    id: heater_data_connected
+    device_class: connectivity
+
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          if (id(hcalory_heater).connected()) {
+            id(ble_seq) += 3;
+            if (id(ble_seq) > 250) id(ble_seq) = 21;
+            uint8_t seq = (uint8_t)id(ble_seq);
+            uint8_t crc = 0x56 + seq; 
+            uint8_t s[] = {0x02, 0x10, 0x00, 0x19, 0x00, 0x15, 0x00, 0x04, 0x00, 0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x05, 0x0d, 0x35, seq, 0x05, 0x00, crc};
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 30, s, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+          }
+
+button:
+  - platform: template
+    name: "Lammitin Virta ON"
+    id: lammitin_virta_on
+    icon: "mdi:power"
+    on_press:
+      - logger.log: "Käynnistetään lämmitys (02 0F)"
+      - lambda: |-
+          uint8_t heat_on[] = {
+            0x02, 0x10, 0x00, 0x1d, 0x00, 0x19, 0x00, 0x04, 0x00, 
+            0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 
+            0x00, 0x0e, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+            0x02, 0x0f 
+          };
+          esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 34, heat_on, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+
+  - platform: template
+    name: "Lammitin Virta OFF"
+    id: lammitin_virta_off
+    icon: "mdi:power-off"
+    on_press:
+      - logger.log: "Sammutetaan lämmitys hallitusti (01 0E)"
+      - lambda: |-
+          uint8_t heat_stop[] = {
+            0x02, 0x10, 0x00, 0x1d, 0x00, 0x19, 0x00, 0x04, 0x00, 
+            0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 
+            0x00, 0x0e, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+            0x01, 0x0e 
+          };
+          esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 34, heat_stop, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+
+  - platform: template
+    name: "Lammitin Puhallus"
+    id: lammitin_puhallus
+    icon: "mdi:fan"
+    on_press:
+      - logger.log: "Kytketään puhallustila (08 15)"
+      - lambda: |-
+          uint8_t fan_cmd[] = {
+            0x02, 0x10, 0x00, 0x1d, 0x00, 0x19, 0x00, 0x04, 0x00, 
+            0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 
+            0x00, 0x0e, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+            0x08, 0x15 
+          };
+          esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 34, fan_cmd, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+number:
+  - platform: template
+    name: "Lammitin Tehoasetus"
+    id: heater_power_level
+    min_value: 1
+    max_value: 10
+    step: 1
+    unit_of_measurement: "lvl"
+    mode: slider
+    optimistic: true  # tämä, jotta UI päivittyy heti
+    state_topic: "mokki/number/lammitin_tehoasetus/state"
+    command_topic: "mokki/number/lammitin_tehoasetus/command"
+    set_action:
+      then:
+        - lambda: |-
+            uint8_t level = (uint8_t)x;
+            uint8_t crc = level + 0x08; // Wireshark-logiikkasi: 03+08=0B (11), 04+08=0C (12)
+            
+            // 26-tavuinen tunneloitu paketti tehon säätöön
+            uint8_t p[] = {
+              0x02, 0x10, 0x00, 0x15, 0x00, 0x11, 0x00, 0x04, 0x00, // Header (26t viestille)
+              0x52, 0x03, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 
+              0x00, 0x06, 0x07, 0x00, 0x00, 0x01, level, crc
+            };
+            esp_ble_gattc_write_char(id(hcalory_heater).get_gattc_if(), id(hcalory_heater).get_conn_id(), 0x0003, 26, p, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+            
+            ESP_LOGI("HEATER", "Asetetaan teho tasolle: %d (CRC: %02X)", level, crc);
