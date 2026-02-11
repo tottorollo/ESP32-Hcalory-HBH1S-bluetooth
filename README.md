@@ -31,11 +31,12 @@ I have no personal interest to develop this further.
 BEFORE COMPILE: Change WIFI settings and MQTT Broker to your configuration in yaml file
 
 # TEST UI
-index.html is light UI to use and test heater. Change your MQTT broker address so you can use the heater. This is also half finnish.
-You will also need MQTT broker to be configured on your machine before UI and ESP will communicate.
+index.html is light UI to use and test heater. Download to your machine. Change your MQTT broker address in UI so you can use the heater. 
+This is also half Finnish.
+You will also need MQTT broker to be configured before UI and ESP will communicate.
 Personally I have hoster this UI and MQTT broker on Raspberry PI Zero 2WH machine with Tailscale to have control over Internet to heater. UI host I have been using is nginx.
 
-Hear is AI generated documentation of yaml:
+Below is a AI generated documentation of yaml:
 
 # TECHNICAL SPECIFICATION: HCALORY DIESEL HEATER BLE PROTOCOL
 
